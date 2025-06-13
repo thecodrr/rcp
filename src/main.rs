@@ -6,11 +6,35 @@ use std::env;
 
 async fn cors_proxy(req: HttpRequest, body: web::Bytes) -> Result<HttpResponse> {
     let url = match req.match_info().get("url") {
-        Some(url) => url,
+        Some(url) => {
+            // Basic URL validation
+            if url.contains("://") && !url.starts_with("http://") && !url.starts_with("https://") {
+                return {
+                    warn!("Bad request: unsupported protocol");
+                    Ok(HttpResponse::BadRequest().body("Unsupported protocol. Only HTTP and HTTPS are allowed."))
+                };
+            }
+
+            // Ensure we have a domain name with at least one dot
+            let domain = url.split("://").last().unwrap_or(url);
+            if !domain.contains('.') {
+                return {
+                    warn!("Bad request: invalid domain - {}", url);
+                    Ok(HttpResponse::BadRequest().body("Invalid domain name"))
+                };
+            }
+
+            // Prepend https:// if no protocol is specified
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                format!("https://{}", url)
+            } else {
+                url.to_string()
+            }
+        },
         None => {
             return {
-                warn!("Bad request: not valid url specified");
-                Ok(HttpResponse::BadRequest().finish())
+                warn!("Bad request: no url specified");
+                Ok(HttpResponse::BadRequest().body("No URL specified"))
             }
         }
     };
@@ -34,19 +58,35 @@ async fn cors_proxy(req: HttpRequest, body: web::Bytes) -> Result<HttpResponse> 
     };
 
     // Forward the request to the specified URL
-    let response = client
-        .request(method, url)
+    let response = match client
+        .request(method, url.clone())
         .body(body.to_vec())
         .send()
         .await
-        .unwrap();
+    {
+        Ok(response) => response,
+        Err(e) => {
+            warn!("Failed to forward request to {}: {}", url, e);
+            return Ok(HttpResponse::BadGateway().body(format!("Failed to forward request: {}", e)));
+        }
+    };
 
     // Get the Content-Type header from the response
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .map(|header| header.to_str().unwrap())
-        .unwrap_or("application/json");
+        .unwrap_or("application/json")
+        .to_string();
+
+    // Get the response body
+    let body = match response.bytes().await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            warn!("Failed to read response body: {}", e);
+            return Ok(HttpResponse::BadGateway().body(format!("Failed to read response body: {}", e)));
+        }
+    };
 
     // Create a new response with the response body and appropriate headers
     Ok(HttpResponse::Ok()
@@ -58,7 +98,7 @@ async fn cors_proxy(req: HttpRequest, body: web::Bytes) -> Result<HttpResponse> 
         .append_header(("Access-Control-Allow-Headers", "Content-Type"))
         .append_header(("Access-Control-Max-Age", "3600"))
         .append_header(("Content-Type", content_type))
-        .body(response.bytes().await.unwrap()))
+        .body(body))
 }
 
 #[actix_web::main]

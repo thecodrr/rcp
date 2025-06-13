@@ -1,10 +1,11 @@
-version: '3.7'
+version: "3.7"
 services:
   rcp:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8080:8080"
+      - "3030:3030"
     environment:
       - LOGGING_ENABLED=true
+    restart: always
